@@ -5,14 +5,15 @@ import {
   CheckCircle2, 
   AlertTriangle, 
   ShieldCheck, 
-  UploadCloud, 
   Cpu, 
-  Clock, 
+  UploadCloud, 
+  RefreshCw, 
   ArrowRight,
-  RefreshCw,
-  AlertCircle
+  Clock,
+  Server,
+  Info
 } from 'lucide-react';
-import { API_V1 } from '../config';
+import { API_V1, API_BASE_URL, DEFAULT_CLOUD_BACKEND, setBackendBaseUrl } from '../config';
 
 interface SystemStats {
   total_processed: number;
@@ -20,7 +21,6 @@ interface SystemStats {
   high_confidence_rate: number;
   whitelisted_matches: number;
   watchlist_alerts: number;
-  total_vehicles: number;
   tesseract_version: string;
   yolo_model_loaded: boolean;
 }
@@ -29,46 +29,107 @@ interface RecognitionRecord {
   id: number;
   plate_text: string;
   confidence: number;
-  timestamp: string;
   status: string;
-  crop_image_url?: string;
-  annotated_image_url?: string;
+  timestamp: string;
+  vehicle?: {
+    owner_name: string;
+    vehicle_model: string;
+  };
 }
+
+const DEMO_STATS: SystemStats = {
+  total_processed: 16,
+  high_confidence_count: 15,
+  high_confidence_rate: 93.8,
+  whitelisted_matches: 11,
+  watchlist_alerts: 2,
+  tesseract_version: 'Tesseract OCR 5.5.0-ready',
+  yolo_model_loaded: true
+};
+
+const DEMO_HISTORY: RecognitionRecord[] = [
+  {
+    id: 101,
+    plate_text: 'MH12AB1234',
+    confidence: 0.962,
+    status: 'whitelisted',
+    timestamp: new Date(Date.now() - 1000 * 60 * 8).toISOString()
+  },
+  {
+    id: 102,
+    plate_text: 'DL8CAF5021',
+    confidence: 0.915,
+    status: 'watchlist_alert',
+    timestamp: new Date(Date.now() - 1000 * 60 * 32).toISOString()
+  },
+  {
+    id: 103,
+    plate_text: 'KA01MJ9999',
+    confidence: 0.948,
+    status: 'whitelisted',
+    timestamp: new Date(Date.now() - 1000 * 60 * 75).toISOString()
+  },
+  {
+    id: 104,
+    plate_text: 'HR26DQ5555',
+    confidence: 0.884,
+    status: 'review_required',
+    timestamp: new Date(Date.now() - 1000 * 60 * 180).toISOString()
+  }
+];
 
 export default function Dashboard() {
   const navigate = useNavigate();
   const [stats, setStats] = useState<SystemStats | null>(null);
   const [recentHistory, setRecentHistory] = useState<RecognitionRecord[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+  const [isDemoMode, setIsDemoMode] = useState(false);
+  const [isWakingUp, setIsWakingUp] = useState(false);
 
   const fetchData = async () => {
     setLoading(true);
-    setError('');
+    setIsWakingUp(false);
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => {
+        setIsWakingUp(true);
+      }, 3500);
+
       const [statsRes, historyRes] = await Promise.all([
-        fetch(`${API_V1}/stats`),
-        fetch(`${API_V1}/history?limit=5`)
+        fetch(`${API_V1}/stats`, { signal: controller.signal }),
+        fetch(`${API_V1}/history?limit=5`, { signal: controller.signal })
       ]);
+
+      clearTimeout(timeoutId);
 
       if (statsRes.ok) {
         const statsData = await statsRes.json();
         setStats(statsData);
+        setIsDemoMode(false);
       }
       if (historyRes.ok) {
         const historyData = await historyRes.json();
         setRecentHistory(historyData);
       }
     } catch {
-      setError('Unable to communicate with Python backend server (http://localhost:8000). Ensure the FastAPI server is running.');
+      // Gracefully switch to Demo Preview Mode so client's screen is always populated
+      setIsDemoMode(true);
+      setStats(DEMO_STATS);
+      setRecentHistory(DEMO_HISTORY);
     } finally {
       setLoading(false);
+      setIsWakingUp(false);
     }
   };
 
   useEffect(() => {
     fetchData();
   }, []);
+
+  const handleSwitchToCloud = () => {
+    setBackendBaseUrl(DEFAULT_CLOUD_BACKEND);
+    window.location.reload();
+  };
 
   const getStatusBadge = (status: string) => {
     switch (status) {
@@ -88,7 +149,14 @@ export default function Dashboard() {
       {/* Header Banner */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white p-6 rounded-2xl border border-slate-200 shadow-xs">
         <div>
-          <h2 className="text-2xl font-bold text-slate-900 tracking-tight">System Overview</h2>
+          <div className="flex items-center space-x-2">
+            <h2 className="text-2xl font-bold text-slate-900 tracking-tight">System Overview</h2>
+            {isDemoMode && (
+              <span className="px-2.5 py-0.5 text-xs font-semibold rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">
+                Demo Preview Mode
+              </span>
+            )}
+          </div>
           <p className="text-slate-500 text-sm mt-1">Real-time OpenCV license plate recognition and vehicle access stats.</p>
         </div>
         <div className="flex items-center space-x-3">
@@ -101,7 +169,7 @@ export default function Dashboard() {
           </button>
           <button 
             onClick={() => navigate('/recognize')}
-            className="inline-flex items-center px-4 py-2.5 text-sm font-semibold text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl shadow-sm transition-colors"
+            className="inline-flex items-center px-4 py-2.5 text-sm font-semibold text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl shadow-xs transition-colors"
           >
             <UploadCloud className="w-4 h-4 mr-2" />
             Analyze Plate Image
@@ -109,13 +177,45 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {error && (
-        <div className="bg-rose-50 border-l-4 border-rose-500 p-4 rounded-xl flex items-start">
-          <AlertCircle className="w-5 h-5 text-rose-500 mt-0.5 mr-3 shrink-0" />
-          <div>
-            <h4 className="text-sm font-bold text-rose-800">Connection Failure</h4>
-            <p className="text-sm text-rose-700 mt-0.5">{error}</p>
+      {/* Backend Status Notice Banner */}
+      {isDemoMode && (
+        <div className="bg-amber-50/80 border border-amber-200 p-4 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+          <div className="flex items-start space-x-3">
+            <Info className="w-5 h-5 text-amber-600 mt-0.5 shrink-0" />
+            <div>
+              <h4 className="text-xs font-bold text-amber-900 uppercase tracking-wide">
+                Live Backend Server Connecting ({API_BASE_URL})
+              </h4>
+              <p className="text-xs text-amber-700 mt-0.5">
+                Displaying sample metrics. Cloud services (e.g. Render) take ~30–50s on initial cold start, or local servers must be active on this device.
+              </p>
+            </div>
           </div>
+          <div className="flex items-center space-x-2 shrink-0">
+            {API_BASE_URL.includes('localhost') && (
+              <button
+                onClick={handleSwitchToCloud}
+                className="px-3 py-1.5 text-xs font-semibold text-indigo-700 bg-white border border-indigo-200 hover:bg-indigo-50 rounded-xl transition-colors shadow-2xs"
+              >
+                Connect to Cloud Backend
+              </button>
+            )}
+            <button
+              onClick={fetchData}
+              disabled={loading}
+              className="px-3 py-1.5 text-xs font-semibold text-amber-800 bg-amber-100 hover:bg-amber-200 rounded-xl transition-colors flex items-center"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 mr-1.5 ${loading ? 'animate-spin' : ''}`} />
+              Retry Live Sync
+            </button>
+          </div>
+        </div>
+      )}
+
+      {isWakingUp && (
+        <div className="bg-indigo-50 border border-indigo-200 p-3 rounded-xl flex items-center text-xs text-indigo-800">
+          <Server className="w-4 h-4 mr-2 text-indigo-600 animate-pulse" />
+          <span>Waking up remote Python FastAPI server... please wait a few seconds.</span>
         </div>
       )}
 
@@ -175,9 +275,9 @@ export default function Dashboard() {
           <div>
             <h3 className="text-base font-bold">OpenCV & Tesseract OCR Pipeline</h3>
             <p className="text-xs text-slate-400 mt-0.5">
-              Engine Version: <span className="text-indigo-300 font-mono">{stats?.tesseract_version || 'Tesseract 5.5.3'}</span> | 
+              Engine Version: <span className="text-indigo-300 font-mono">{stats?.tesseract_version || 'Tesseract 5.5.0-ready'}</span> | 
               YOLO Detector: <span className={stats?.yolo_model_loaded ? 'text-emerald-400 font-semibold' : 'text-amber-400 font-semibold'}>
-                {stats?.yolo_model_loaded ? 'Active (yolov8n.pt)' : 'Haar Cascade Fallback'}
+                {stats?.yolo_model_loaded ? 'Active (YOLOv8 Plate Model)' : 'Haar Cascade Fallback'}
               </span>
             </p>
           </div>
